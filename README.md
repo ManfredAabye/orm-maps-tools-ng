@@ -1,6 +1,6 @@
 # OpenSim (O)RM Map Tools NG - Benutzerhandbuch
 
-![OpenSim ORM Tools NG](orm-maps-tools-ng-128.png)
+![OpenSim ORM Tools NG](orm-maps-tools-ng-master.png)
 
 ## 📖 Inhaltsverzeichnis
 
