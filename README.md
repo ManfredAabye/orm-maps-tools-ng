@@ -418,5 +418,15 @@ Manfred Aabye
 - GitHub: [@ManfredAabye](https://github.com/ManfredAabye)
 
 ---
+250120261957
+
+Jetzt werden beim Laden alle relevanten Texturbestandteile (albedo, normal, ao, roughness, metallic, height, emission) ins Ausgabe-Verzeichnis kopiert – nicht mehr nur die albedo-Texturen. 
+
+Die Einträge in texture_list zeigen auf die kopierten Dateien im Zielordner. Damit ist die Basis für alle weiteren Verarbeitungsschritte korrekt!
+
+Fit gemacht für <https://ambientcg.com/>
+
+---
 
 **Viel Erfolg mit OpenSim (O)RM Map Tools NG!** 🚀
+
