@@ -424,9 +424,10 @@ Jetzt werden beim Laden alle relevanten Texturbestandteile (albedo, normal, ao, 
 
 Die Einträge in texture_list zeigen auf die kopierten Dateien im Zielordner. Damit ist die Basis für alle weiteren Verarbeitungsschritte korrekt!
 
-Fit gemacht für <https://ambientcg.com/>
+Fit gemacht für <https://ambientcg.com/> 1K und 2K.
 
 ---
 
 **Viel Erfolg mit OpenSim (O)RM Map Tools NG!** 🚀
+
 
