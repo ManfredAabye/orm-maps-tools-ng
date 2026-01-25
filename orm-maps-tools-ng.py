@@ -964,78 +964,64 @@ class ORMGeneratorGUI:
         thread.start()
     
     def _load_textures_thread(self):
+        import shutil
         input_dir = self.input_dir.get()
+        output_dir = self.output_dir.get()
         self.status.set("Suche Texturen...")
         self.log_text.delete(1.0, tk.END)
-        
         # Alle Albedo-Texturen finden
         albedo_files = []
         albedo_suffixes = self.get_suffixes("albedo")
         extensions = self.get_extensions()
         separators = self.get_separators()
         resolutions = self.get_resolutions()
-        
-        # Bevorzugte Auflösung
         preferred_res = self.preferred_resolution.get()
-        
         for suffix in albedo_suffixes:
             for ext in extensions:
                 for sep in separators:
                     pattern = f"*{sep}{suffix}.{ext}"
                     albedo_files.extend(glob.glob(os.path.join(input_dir, pattern)))
-                    
                     if self.recursive_search.get():
                         albedo_files.extend(glob.glob(os.path.join(input_dir, "**", pattern), recursive=True))
-                    
-                    # Polyhaven: *_diff_1k.jpg, *_diff_2k.jpg, etc.
                     if preferred_res == "auto":
                         search_resolutions = resolutions
                     else:
-                        # Bevorzugte Auflösung zuerst, dann andere
                         search_resolutions = [preferred_res] + [r for r in resolutions if r != preferred_res]
-                    
                     for res in search_resolutions:
                         pattern_res = f"*{sep}{suffix}_{res}.{ext}"
                         albedo_files.extend(glob.glob(os.path.join(input_dir, pattern_res)))
-                        
                         if self.recursive_search.get():
                             albedo_files.extend(glob.glob(os.path.join(input_dir, "**", pattern_res), recursive=True))
-        
         albedo_files = list(set(albedo_files))
-        
         if not albedo_files:
             self.log("Keine Texturen gefunden!")
             self.status.set("Fehler: Keine Texturen gefunden")
             return
-        
-        # Extrahiere Base-Namen
+        # Extrahiere Base-Namen und kopiere alle relevanten Texturen ins Ausgabe-Verzeichnis
         self.texture_list = []
+        map_types = [
+            ("albedo", self.get_suffixes("albedo")),
+            ("normal", self.get_suffixes("normal")),
+            ("ao", self.get_suffixes("ao")),
+            ("roughness", self.get_suffixes("roughness")),
+            ("metallic", self.get_suffixes("metallic")),
+            ("height", self.get_suffixes("height")),
+            ("emission", self.get_suffixes("emission")),
+        ]
         for albedo_file in albedo_files:
             base_name = os.path.basename(albedo_file)
+            base_name_clean = None
             for suffix in albedo_suffixes:
                 for ext in extensions:
                     for sep in separators:
-                        # Standard: material_diff.jpg
                         full_suffix = f"{sep}{suffix}.{ext}"
                         if base_name.endswith(full_suffix):
-                            base_name = base_name[:-(len(full_suffix))]
-                            self.texture_list.append({
-                                'base_name': base_name,
-                                'albedo_file': albedo_file,
-                                'dir': os.path.dirname(albedo_file)
-                            })
+                            base_name_clean = base_name[:-(len(full_suffix))]
                             break
-                        
-                        # Polyhaven: material_diff_1k.jpg
                         for res in resolutions:
                             full_suffix_res = f"{sep}{suffix}_{res}.{ext}"
                             if base_name.endswith(full_suffix_res):
-                                base_name = base_name[:-(len(full_suffix_res))]
-                                self.texture_list.append({
-                                    'base_name': base_name,
-                                    'albedo_file': albedo_file,
-                                    'dir': os.path.dirname(albedo_file)
-                                })
+                                base_name_clean = base_name[:-(len(full_suffix_res))]
                                 break
                         else:
                             continue
@@ -1046,11 +1032,36 @@ class ORMGeneratorGUI:
                 else:
                     continue
                 break
-        
+            if base_name_clean is None:
+                continue
+            texture_entry = {'base_name': base_name_clean, 'dir': output_dir if output_dir else os.path.dirname(albedo_file)}
+            # Kopiere und finde alle relevanten Texturen
+            for map_type, suffixes in map_types:
+                found_file = None
+                if map_type == "albedo":
+                    found_file = albedo_file
+                elif map_type == "normal":
+                    found_file = self.find_texture_file_with_ogl(os.path.dirname(albedo_file), base_name_clean, suffixes)
+                else:
+                    found_file = self.find_texture_file(os.path.dirname(albedo_file), base_name_clean, suffixes)
+                if found_file and os.path.exists(found_file):
+                    if output_dir and os.path.abspath(os.path.dirname(found_file)) != os.path.abspath(output_dir):
+                        dst = os.path.join(output_dir, os.path.basename(found_file))
+                        try:
+                            shutil.copy2(found_file, dst)
+                            found_file_out = dst
+                        except Exception as copy_err:
+                            self.log(f"WARNUNG: Konnte {found_file} nicht kopieren: {copy_err}")
+                            found_file_out = found_file
+                    else:
+                        found_file_out = found_file
+                    texture_entry[f"{map_type}_file"] = found_file_out
+                else:
+                    texture_entry[f"{map_type}_file"] = None
+            self.texture_list.append(texture_entry)
         self.current_texture_index = 0
         self.log(f"Gefunden: {len(self.texture_list)} Textur-Sets")
         self.status.set(f"{len(self.texture_list)} Texturen geladen")
-        
         if self.texture_list:
             self.show_current_texture()
     
@@ -1650,86 +1661,81 @@ class ORMGeneratorGUI:
         thread.start()
     
     def _generate_gltf_thread(self):
-        """Thread-Funktion für GLTF-Generierung"""
+        """Thread-Funktion für GLTF-Generierung (immer ins Ausgabeverzeichnis)"""
         try:
+            import shutil
             import json
-            
             self.status.set("Generiere GLTF-Dateien...")
             self.progress.set(0)
-            
+            output_dir = self.output_dir.get() or os.getcwd()
+            os.makedirs(output_dir, exist_ok=True)
             generated = 0
             errors = 0
-            
             for i, texture_info in enumerate(self.texture_list):
                 base_name = texture_info['base_name']
                 texture_dir = texture_info['dir']
-                
                 progress_percent = (i / len(self.texture_list)) * 100
                 self.progress.set(progress_percent)
                 self.status.set(f"GLTF: {base_name}")
-                
                 try:
-                    # Finde alle vorhandenen Texturen mit JSON-Konfiguration
-                    albedo_file = texture_info['albedo_file']
-                    normal_file = self.find_texture_file_with_ogl(texture_dir, base_name, self.get_suffixes("normal"))
-                    emission_file = self.find_texture_file(texture_dir, base_name, self.get_suffixes("emission"))
-                    
-                    # Prüfe ob ORM Map bereits existiert
-                    output_dir = self.output_dir.get() or texture_dir
-                    orm_file = os.path.join(output_dir, f"{base_name}_ORM.png")
-                    
-                    # Falls ORM nicht existiert und fill_missing_maps aktiv ist, erstelle sie
-                    if not os.path.exists(orm_file) and self.fill_missing_maps.get():
-                        self.log(f"GLTF: Erstelle fehlende ORM-Map für {base_name}")
-                        success = self.create_single_orm_map(texture_dir, output_dir, base_name)
-                        if not success:
-                            self.log(f"WARNUNG: ORM-Erstellung fehlgeschlagen für {base_name}")
-                            orm_file = None
-                    elif not os.path.exists(orm_file):
-                        self.log(f"WARNUNG: ORM fehlt für {base_name} (automatisches Auffüllen deaktiviert)")
-                        orm_file = None
-                    
-                    # Erstelle Texture-Dictionary mit relativen Pfaden
+                    # Alle relevanten Texturen suchen und ins Ausgabeverzeichnis kopieren
+                    map_types = [
+                        ("albedo", self.get_suffixes("albedo")),
+                        ("normal", self.get_suffixes("normal")),
+                        ("ao", self.get_suffixes("ao")),
+                        ("roughness", self.get_suffixes("roughness")),
+                        ("metallic", self.get_suffixes("metallic")),
+                        ("height", self.get_suffixes("height")),
+                        ("emission", self.get_suffixes("emission")),
+                    ]
+                    texture_files = {}
+                    for map_type, suffixes in map_types:
+                        if map_type == "albedo":
+                            src = texture_info.get('albedo_file')
+                        elif map_type == "normal":
+                            src = self.find_texture_file_with_ogl(texture_dir, base_name, suffixes)
+                        else:
+                            src = self.find_texture_file(texture_dir, base_name, suffixes)
+                        if src and os.path.exists(src):
+                            dst = os.path.join(output_dir, f"{base_name}_{map_type}.{self.output_format.get().lower()}")
+                            if not os.path.abspath(src) == os.path.abspath(dst):
+                                try:
+                                    shutil.copy2(src, dst)
+                                except Exception as copy_err:
+                                    self.log(f"WARNUNG: Konnte {src} nicht kopieren: {copy_err}")
+                            texture_files[map_type] = dst
+                    # ORM Map ggf. erzeugen oder kopieren
+                    orm_file = os.path.join(output_dir, f"{base_name}_ORM.{self.output_format.get().lower()}")
+                    if not os.path.exists(orm_file):
+                        # Versuche ORM zu erzeugen
+                        self.create_single_orm_map(output_dir, output_dir, base_name)
+                    if os.path.exists(orm_file):
+                        texture_files['orm'] = orm_file
+                    # Erstelle Texture-Dictionary für GLTF
                     gltf_textures = {}
-                    
-                    if albedo_file and os.path.exists(albedo_file):
-                        rel_path = os.path.relpath(albedo_file, texture_dir)
-                        gltf_textures['baseColor'] = f"./{rel_path.replace(os.sep, '/')}"
-                    
-                    if normal_file and os.path.exists(normal_file):
-                        rel_path = os.path.relpath(normal_file, texture_dir)
-                        gltf_textures['normal'] = f"./{rel_path.replace(os.sep, '/')}"
-                    
-                    if orm_file and os.path.exists(orm_file):
-                        rel_path = os.path.relpath(orm_file, texture_dir)
-                        gltf_textures['orm'] = f"./{rel_path.replace(os.sep, '/')}"
-                    
-                    if emission_file and os.path.exists(emission_file):
-                        rel_path = os.path.relpath(emission_file, texture_dir)
-                        gltf_textures['emission'] = f"./{rel_path.replace(os.sep, '/')}"
-                    
-                    # Erstelle GLTF JSON
+                    if 'albedo' in texture_files:
+                        gltf_textures['baseColor'] = f"./{os.path.basename(texture_files['albedo'])}"
+                    if 'normal' in texture_files:
+                        gltf_textures['normal'] = f"./{os.path.basename(texture_files['normal'])}"
+                    if 'emission' in texture_files:
+                        gltf_textures['emission'] = f"./{os.path.basename(texture_files['emission'])}"
+                    if 'orm' in texture_files:
+                        gltf_textures['orm'] = f"./{os.path.basename(texture_files['orm'])}"
+                    # GLTF-Datei schreiben
                     gltf_data = self._create_gltf_structure(base_name, gltf_textures)
-                    
-                    # Speichere GLTF-Datei
-                    gltf_file = os.path.join(texture_dir, f"{base_name}.gltf")
-                    with open(gltf_file, 'w') as f:
+                    gltf_file = os.path.join(output_dir, f"{base_name}.gltf")
+                    with open(gltf_file, 'w', encoding='utf-8') as f:
                         json.dump(gltf_data, f, indent=2)
-                    
-                    self.log(f"GLTF: {base_name}.gltf")
+                    self.log(f"GLTF: {os.path.basename(gltf_file)}")
                     generated += 1
-                    
                 except Exception as e:
                     self.log(f"FEHLER GLTF {base_name}: {str(e)}")
                     errors += 1
-            
             self.progress.set(100)
             self.status.set("GLTF-Generierung abgeschlossen!")
             self.log("=" * 50)
             self.log(f"GLTF: {generated} erstellt, {errors} Fehler")
-            
             messagebox.showinfo("Fertig", f"GLTF-Generierung abgeschlossen!\nErstellt: {generated}\nFehler: {errors}")
-            
         except Exception as e:
             self.log(f"FEHLER: {str(e)}")
             self.status.set("Fehler bei GLTF-Generierung")
